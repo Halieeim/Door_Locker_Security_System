@@ -1,0 +1,222 @@
+/******************************************************************************
+ *
+ * Module: Timer1
+ *
+ * File Name: timer1.c
+ *
+ * Description: Source file for the Timer1 driver
+ *
+ * Author: Ahmed Abd El-Halim
+ *
+ *******************************************************************************/
+
+
+#include "gpio.h"
+#include "keypad.h"
+#include "uart.h"
+#include "lcd.h"
+#include "util/delay.h"
+
+#define PASSWORD_SIZE	5
+#define MCU_IS_READY	1
+
+uint8 g_ticks = 0, g_lcdCounter = 0;
+
+void controlLCDTiming_15sec(void);
+void controlLCDTiming_3sec(void);
+
+Timer1_ConfigType TIMER1_configPtr = {0,8000,F_CPU_1024,COMPARE_MODE};
+
+int main(){
+	uint8 step = 0, counter, ACK = 1, attempts, key;
+	uint8 password[PASSWORD_SIZE+2];
+	UART_configType UART_configPtr = {9600,ASYNC_DOUBLE_SPEED,DISABLED,ONE_STOP_BIT,SIZE_8,RISING_EDGE};
+	UART_init(&UART_configPtr);
+	LCD_init();
+	UART_sendByte(MCU_IS_READY);
+
+	for(;;){
+		if(step == 0){
+			counter = 0;
+			attempts = 0;
+			LCD_clearScreen();
+			LCD_displayString("plz enter pass: ");
+			LCD_moveCursor(1, 0);
+			while(counter < PASSWORD_SIZE){
+				key = KEYPAD_getPressedKey();
+				if((key >= 0) && (key <= 9)){
+					password[counter] = key;
+					LCD_displayCharacter('*');
+					counter++;
+				}
+				_delay_ms(500);
+			}
+			password[counter] = '#';
+			if(KEYPAD_getPressedKey() == '='){
+				while( UART_recieveByte() != MCU_IS_READY){}
+				UART_sendString(password);
+				_delay_ms(500);
+				step++;
+			}
+		}
+		else if(step == 1){
+			counter = 0;
+			LCD_clearScreen();
+			LCD_displayString("plz re-enter the");
+			LCD_displayStringRowColumn(1, 0, "same pass: ");
+			while(counter < PASSWORD_SIZE){
+				key = KEYPAD_getPressedKey();
+				if((key >= 0) && (key <= 9)){
+					password[counter] = key;
+					LCD_displayCharacter('*');
+					counter++;
+				}
+				_delay_ms(500);
+			}
+			password[counter] = '#';
+			if(KEYPAD_getPressedKey() == '='){
+				UART_sendString(password);
+				UART_sendByte(MCU_IS_READY);
+				ACK = UART_recieveByte();
+				if(ACK == 0){ /* two passwords are not matched */
+					step = 0;
+					ACK = 1;
+					LCD_clearScreen();
+					LCD_displayString("WRONG PASS!!!");
+					_delay_ms(500);
+				}
+				else{
+					step++;
+				}
+			}
+		}
+		else if(step == 2){
+			LCD_clearScreen();
+			LCD_displayStringRowColumn(0, 0, "+: OPEN DOOR");
+			LCD_displayStringRowColumn(1, 0, "-: CHANGE PASS");
+			if(KEYPAD_getPressedKey() == '+'){
+				counter = 0;
+				LCD_clearScreen();
+				LCD_displayString("plz enter pass: ");
+				LCD_moveCursor(1, 0);
+
+				while(UART_recieveByte() != MCU_IS_READY){}
+				UART_sendByte('+');
+
+				while(counter < PASSWORD_SIZE){
+					key = KEYPAD_getPressedKey();
+					if((key >= 0) && (key <= 9)){
+						password[counter] = key;
+						LCD_displayCharacter('*');
+						counter++;
+					}
+					_delay_ms(500);
+				}
+				password[counter] = '#';
+				if(KEYPAD_getPressedKey() == '='){
+					UART_sendByte(MCU_IS_READY);
+					UART_sendString(password);
+					UART_sendByte(MCU_IS_READY);
+					ACK = UART_recieveByte();
+					if(ACK == 2){
+						ACK = 1;
+						attempts++;
+						if(attempts == 3){
+							LCD_clearScreen();
+							LCD_displayString("YOU ENTERED WRONG");
+							LCD_displayStringRowColumn(1, 0, "PASS 3 TIMES!!!");
+							while( UART_recieveByte() != MCU_IS_READY){}
+							UART_sendByte('e');
+						}
+						else{
+							LCD_clearScreen();
+							LCD_displayString("WRONG PASS!!!");
+							_delay_ms(500);
+						}
+					}
+					else{
+						LCD_clearScreen();
+						LCD_displayString("Door is Unlocking");
+						Timer1_init(&TIMER1_configPtr);
+						Timer1_setCallBack(controlLCDTiming_15sec);
+						_delay_ms(500);
+						step++;
+					}
+				}
+			}
+			else if(KEYPAD_getPressedKey() == '-'){
+				counter = 0;
+				LCD_clearScreen();
+				LCD_displayString("plz enter pass: ");
+				LCD_moveCursor(1, 0);
+
+				while( UART_recieveByte() != MCU_IS_READY){}
+				UART_sendByte('-');
+
+				while(counter < PASSWORD_SIZE){
+					key = KEYPAD_getPressedKey();
+					if((key >= 0) && (key <= 9)){
+						password[counter] = key;
+						LCD_displayCharacter('*');
+						counter++;
+					}
+					_delay_ms(500);
+				}
+				password[counter] = '#';
+				if(KEYPAD_getPressedKey() == '='){
+					UART_sendByte(MCU_IS_READY);
+					UART_sendString(password);
+					UART_sendByte(MCU_IS_READY);
+					ACK = UART_recieveByte();
+
+					if(ACK == 5){ /* entered wrong password */
+						ACK = 1;
+						attempts++;
+						if(attempts == 3){
+							LCD_clearScreen();
+							LCD_displayString("YOU ENTERED WRONG");
+							LCD_displayStringRowColumn(1, 0, "PASS 3 TIMES!!!");
+							while( UART_recieveByte() != MCU_IS_READY){}
+							UART_sendByte('e');
+						}
+						else{
+							LCD_clearScreen();
+							LCD_displayString("WRONG PASS!!!");
+						}
+					}
+					else{
+						step = 0;
+					}
+				}
+			}
+		}
+	}
+}
+
+void controlLCDTiming_15sec(void){
+	g_ticks++;
+	if(g_ticks == 15){ /* 15 seconds */
+		DcMotor_Rotate(STOP, 0);
+		g_lcdCounter++;
+		g_ticks = 0;
+		if(g_lcdCounter == 1){
+			Timer1_setCallBack(controlLCDTiming_3sec);
+		}
+		else if(g_lcdCounter == 2){
+			Timer1_deInit();
+			DcMotor_Rotate(STOP, 0);
+			g_lcdCounter = 0;
+		}
+	}
+}
+
+void controlLCDTiming_3sec(void){
+	g_ticks++;
+	if(g_ticks == 3){ /* 3 seconds */
+		LCD_clearScreen();
+		LCD_displayString("DOOR IS LOCKING");
+		g_ticks = 0;
+		Timer1_setCallBack(controlLCDTiming_15sec);
+	}
+}
+

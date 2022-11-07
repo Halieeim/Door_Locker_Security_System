@@ -1,0 +1,192 @@
+/******************************************************************************
+ *
+ * Module: CONTROL ECU
+ *
+ * Author: Ahmed Abd El-Halim
+ *
+ *******************************************************************************/
+
+#include "DcMotor.h"
+#include "external_eeprom.h"
+#include "buzzer.h"
+#include "uart.h"
+#include "twi.h"
+#include "timer1.h"
+#include "util/delay.h"
+#include "avr/interrupt.h"
+
+#define MCU_IS_READY				1
+#define EEPROM_PASSWORD_ADDRESS		0x0011
+#define PASSWORD_SIZE				5
+
+void comparePasswords(uint8 flag, uint8 password1[], uint8 password2[]);
+void controlMotorTiming_15sec(void);
+void controlMotorTiming_3sec(void);
+void controlBuzzerTiming_1min(void);
+
+uint8 g_equal_flag, g_ticks = 0, g_motorCounter = 0, g_stuckFlag = 1;
+uint8 savedPassword[PASSWORD_SIZE+1];
+
+Timer1_ConfigType TIMER1_configPtr = {0,8000,F_CPU_1024,COMPARE_MODE};
+UART_configType UART_configPtr = {9600,ASYNC_DOUBLE_SPEED,DISABLED,ONE_STOP_BIT,SIZE_8,RISING_EDGE};
+TWI_ConfigType TWI_configPtr = {0b00000010,400};
+
+int main(){
+	uint8 recievedPassword1[PASSWORD_SIZE+2], recievedPassword2[PASSWORD_SIZE+2], savedPassword[PASSWORD_SIZE+1];
+	uint8 recievedByte = 0, flag = 0, i, j, loopCounter = 0;
+
+	UART_init(&UART_configPtr);
+	DcMotor_Init();
+	Buzzer_init();
+	TWI_init(&TWI_configPtr);
+	sei();
+	while( UART_recieveByte() != MCU_IS_READY){}
+
+	for(;;){
+		comparePasswords(flag, recievedPassword1, recievedPassword2);
+		i = 0;
+		while(i < PASSWORD_SIZE){
+			EEPROM_readByte(EEPROM_PASSWORD_ADDRESS + i, &savedPassword[i]);
+			i++;
+			_delay_ms(100);
+		}
+		savedPassword[i] = '\0';
+		g_equal_flag = 1;
+
+		if(!flag){
+			i = 0;
+			loopCounter = 0;
+			do{
+				g_equal_flag = 1;
+				UART_sendByte(MCU_IS_READY);
+				recievedByte = UART_recieveByte();
+
+				if(loopCounter < 3){
+					while(UART_recieveByte() != MCU_IS_READY){}
+					UART_receiveString(recievedPassword1);
+					loopCounter++;
+				}
+
+				if(recievedByte == '+'){
+					for(j = 0; j < PASSWORD_SIZE; j++){
+						if(recievedPassword1[j] != savedPassword[j]){
+							g_equal_flag = 0;
+							break;
+						}
+					}
+
+					if(g_equal_flag){
+						Timer1_init(&TIMER1_configPtr);
+						Timer1_setCallBack(controlMotorTiming_15sec);
+						DcMotor_Rotate(CW, 100);
+						while(UART_recieveByte() != MCU_IS_READY){}
+						UART_sendByte(SUCCESS);
+					}
+					else{
+						while(UART_recieveByte() != MCU_IS_READY){}
+						UART_sendByte(2);
+					}
+				}
+				else if(recievedByte == '-'){
+					for(j = 0; recievedPassword1[j] != '\0'; j++){
+						if(recievedPassword1[j] != savedPassword[j]){
+							g_equal_flag = 0;
+							break;
+						}
+					}
+					if(g_equal_flag){
+						flag = 0;
+						while(UART_recieveByte() != MCU_IS_READY){}
+						UART_sendByte(SUCCESS);
+					}
+					else{
+						while(UART_recieveByte() != MCU_IS_READY){}
+						UART_sendByte(2);
+					}
+				}
+				else if(recievedByte == 'e'){
+					Buzzer_on();
+					Timer1_init(&TIMER1_configPtr);
+					Timer1_setCallBack(controlBuzzerTiming_1min);
+					while(g_stuckFlag == 1){}
+				}
+			}while(g_equal_flag != 1);
+		}
+	}
+
+}
+
+
+uint8 passwordIsSet(void){
+	if((savedPassword[0] <= 9) || (savedPassword[0] >= 0)){
+		return 1;
+	}
+	else{
+		return 0;
+	}
+}
+
+void comparePasswords(uint8 flag, uint8 password1[], uint8 password2[]){
+	int i = 0;
+	g_equal_flag = 1;
+	if(flag == 0){
+		UART_sendByte(MCU_IS_READY);
+		UART_receiveString(password1);
+		UART_receiveString(password2);
+		while(UART_recieveByte() != MCU_IS_READY){}
+		for(int j = 0; password1[j] != '\0'; j++){
+			if(password1[j] != password2[j]){
+				g_equal_flag = 0;
+				break;
+			}
+		}
+		if(g_equal_flag){
+			flag = 1;
+			while(password1[i] != '\0'){
+				EEPROM_writeByte(EEPROM_PASSWORD_ADDRESS+i, password2[i]);
+				i++;
+				_delay_ms(100);
+			}
+			UART_sendByte(SUCCESS);
+		}
+		else{
+			UART_sendByte(ERROR);
+		}
+	}
+}
+
+void controlMotorTiming_15sec(void){
+	g_ticks++;
+	if(g_ticks == 15){ /* 15 seconds */
+		DcMotor_Rotate(STOP, 0);
+		g_motorCounter++;
+		g_ticks = 0;
+		if(g_motorCounter == 1){
+			Timer1_setCallBack(controlMotorTiming_3sec);
+		}
+		else if(g_motorCounter == 2){
+			Timer1_deInit();
+			DcMotor_Rotate(STOP, 0);
+			g_motorCounter = 0;
+		}
+	}
+}
+
+void controlMotorTiming_3sec(void){
+	g_ticks++;
+	if(g_ticks == 3){ /* 3 seconds */
+		DcMotor_Rotate(A_CW, 100);
+		g_ticks = 0;
+		Timer1_setCallBack(controlMotorTiming_15sec);
+	}
+}
+
+void controlBuzzerTiming_1min(void){
+	g_ticks++;
+	if(g_ticks == 60){
+		Buzzer_off();
+		g_ticks = 0;
+		g_stuckFlag = 0;
+	}
+}
+
